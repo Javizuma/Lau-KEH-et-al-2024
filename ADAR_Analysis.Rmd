@@ -1,0 +1,88 @@
+---
+title: "ADAR_analysis"
+author: "Javier Villegas"
+date: "2023-05-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(pagoda2)
+library(conos)
+library(parallel)
+library(magrittr)
+library(ggplot2)
+library(pbapply)
+library(tibble)
+library(dplyr)
+library(ggrastr)
+library(cowplot)
+library(ggbeeswarm)
+library(readr)
+library(pheatmap)
+library(reshape2)
+library(tidyverse)
+library(hrbrthemes)
+library(viridis)
+library(forcats)
+library(circlize)
+library(ComplexHeatmap)
+library(DESeq2)
+devtools::load_all()
+theme_set(theme_bw())
+  
+outPath <- function(...) OutputPath("adar_analysis", ...)
+```
+
+```{r}
+
+```
+
+
+
+```{r}
+#Heatmap
+de_all4_ADAR1<-de_all4[de_all4$Gene=='ADAR',]
+df_ADAR1<- data.frame(Type=de_all4_ADAR1$Type,ADAR1=de_all4_ADAR1$log2FoldChange)
+
+de_all4_ADAR2<-de_all4[de_all4$Gene=='ADARB1',]
+df_ADAR2<- data.frame(Type=de_all4_ADAR2$Type,ADAR2=de_all4_ADAR2$log2FoldChange)
+
+de_all4_ADAR3<-de_all4[de_all4$Gene=='ADARB2',]
+df_ADAR3<- data.frame(Type=de_all4_ADAR3$Type,ADAR3=de_all4_ADAR3$log2FoldChange)
+
+
+df_list<- list(df_ADAR1,df_ADAR2,df_ADAR3)
+data_heatmap<- df_list %>% purrr::reduce(full_join,by="Type")
+data_heatmap8sub <- data_heatmap %>% column_to_rownames(var="Type")
+data_heatmap8sub[is.na(data_heatmap8sub)]=0
+data_heatmap8sub<- as.matrix(data_heatmap8sub)
+
+
+
+de_all4_ADAR1<-de_all4[de_all4$Gene=='ADAR',]
+df2_ADAR1<- data.frame(Type=de_all4_ADAR1$Type,ADAR1_pValue=de_all4_ADAR1$padj)
+
+de_all4_ADAR2<-de_all4[de_all4$Gene=='ADARB1',]
+df2_ADAR2<- data.frame(Type=de_all4_ADAR2$Type,ADAR2_pValue=de_all4_ADAR2$padj)
+
+de_all4_ADAR3<-de_all4[de_all4$Gene=='ADARB2',]
+df2_ADAR3<- data.frame(Type=de_all4_ADAR3$Type,ADAR3_pValue=de_all4_ADAR3$padj)
+
+
+df2_list<- list(df2_ADAR1,df2_ADAR2,df2_ADAR3)
+data_heatmap<- df2_list %>% purrr::reduce(full_join,by="Type")
+data_heatmap5 <- data_heatmap %>% column_to_rownames(var="Type")  #Creating Dataframe with pvalues
+data_heatmap5[is.na(data_heatmap5)]=0
+data_heatmap5<- as.matrix(data_heatmap5)
+
+col_fun = colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+data_heatmap8sub <- data_heatmap8sub
+data_heatmap5<-data_heatmap5
+heatmap5<- Heatmap(data_heatmap8sub, name = "log2FoldChange", row_order = sort(rownames(data_heatmap8sub)),
+                   column_order = sort(colnames(data_heatmap8sub)),
+                   col = col_fun,row_names_gp = gpar(fontsize = 8),column_title_gp = gpar(fontsize = 8),column_names_gp = gpar(fontsize = 8), cell_fun = function(j, i, x, y, width, height, fill) {if(data_heatmap5[i, j] < 0.05  & data_heatmap5[i,j]!=0) grid.text(sprintf("*", data_heatmap8sub[i, j]), x, y, gp = gpar(fontsize = 12))})
+heatmap5
+tidyHeatmap:::save_pdf(heatmap5,"heatmap_ADAR_36sub.pdf",width=4.5, height=20)
+
+```
+
