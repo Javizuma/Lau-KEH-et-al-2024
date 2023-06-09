@@ -27,28 +27,141 @@ library(forcats)
 library(circlize)
 library(ComplexHeatmap)
 library(DESeq2)
+library(clusterProfiler)
+library(DOSE)
+library(org.Hs.eg.db)
+library(enrichplot)
+library(Matrix)
+library(conos)
+library(CellAnnotatoR)
+
 devtools::load_all()
 theme_set(theme_bw())
   
 outPath <- function(...) OutputPath("adar_analysis", ...)
 ```
 
-```{r}
 
+
+```{r}
+#Preparing the data
+con <- read_rds(CachePath("con_filt_samples.rds"))
+
+sample_info <- MetadataPath("sample_info.csv") %>% read_csv()
+sex_per_sample <- sample_info %$% setNames(Sex, Alias)
+
+#Get raw counts for each sample/p2 <- con$getJointCountMatrix(raw=T) %>% Matrix::t() %>% GetPagoda(build.graph=F, ...) 
+cm_per_samp_raw <- lapply(con$samples, function(p2) p2$misc$rawCounts)
+#Add raw counts for NeuNNeg cells 
+cm_per_samp_raw$NeuNNeg <- CachePath("count_matrices.rds") %>% read_rds() %>% .$NeuN %>% t()
+
+#Calculates the median of UMIs per sample
+med_umis_per_samp <- pblapply(cm_per_samp_raw, Matrix::rowSums) %>% sapply(median)
+#Calculates the median of genes per sample
+med_genes_per_samp <- pblapply(cm_per_samp_raw, getNGenes) %>% sapply(median)
+#Calculates the median of cells per sample 
+n_cells_per_samp <- sapply(cm_per_samp_raw, nrow)
+mean(med_genes_per_samp)
+
+#Merges Count Matrices for all the samples
+cm_merged <- con$getJointCountMatrix()
+
+#Retrieve sample names per cell
+sample_per_cell <- con$getDatasetPerCell()
+#Creates a list with the samples and their condition (epilepsy/control)
+condition_per_sample <- ifelse(grepl("E", levels(sample_per_cell)), "epilepsy", "control") %>% 
+  setNames(levels(sample_per_cell))
+#Assigns an annotation to each cell
+annotation_by_level <- read_csv(MetadataPath("annotation.csv")) %>% 
+  filter(cell %in% rownames(cm_merged))
+#Groups cells per annotation level
+annotation_by_level %<>% .[, 2:ncol(.)] %>% lapply(setNames, annotation_by_level$cell)
+#Storages as factor l4's cells and their annotation
+annotation <- as.factor(annotation_by_level$l4)
+#Assigns to each neuron type their correspondent excitatory/inhibitory annotation
+neuron_type_per_type <- ifelse(grepl("L[2-6].+", unique(annotation)), "Excitatory", "Inhibitory") %>% 
+  setNames(unique(annotation))
+#List with the different samples separated into epilepsy/control groups
+samp_per_cond <- sample_info$Alias %>% split(condition_per_sample[.])
+
+type_order <- names(neuron_type_per_type)[order(neuron_type_per_type, names(neuron_type_per_type))]
+annotation <- factor(annotation, levels=type_order)
+
+cm_merged <- con$getJointCountMatrix() %>% Matrix::t()
+cm_merged_raw <- con$getJointCountMatrix(raw=T) %>% Matrix::t()
+
+annotation_by_level <- MetadataPath("annotation.csv") %>% read_csv() %>%
+  filter(cell %in% colnames(cm_merged))
+annotation <- annotation_by_level %$% setNames(l4, cell) %>% as.factor()
+annotation2 <- annotation_by_level %$% setNames(l2, cell) %>% as.factor()
+
+sample_per_cell <- con$getDatasetPerCell()
+
+neuron_type_per_type <- ifelse(grepl("L[2-6].+", unique(annotation)), "Excitatory", "Inhibitory") %>%
+  setNames(unique(annotation))
+
+condition_per_sample <- ifelse(grepl("E", levels(sample_per_cell)), "epilepsy", "control") %>%
+  setNames(levels(sample_per_cell))
+
+type_order <- names(neuron_type_per_type)[order(neuron_type_per_type, names(neuron_type_per_type))]
+
+annot_filt <- as.factor(annotation[names(con$getDatasetPerCell())])
+cm_bool <- cm_merged_raw
+cm_bool@x <- (cm_merged_raw@x > 1) * 1
+
+cm_collapsed_bool <- sccore:::collapseCellsByType(Matrix::t(cm_bool), annot_filt, min.cell.count=0)
+#Had to use another package as my version of conos no longer has that function
+
+expressed_genes_per_type <- (cm_collapsed_bool > as.vector(table(annot_filt)[rownames(cm_collapsed_bool)] * 0.05)) %>% 
+  apply(1, function(row) names(which(row)))
+
+gene_id_per_name <- bitr(rownames(cm_merged_raw), 'SYMBOL', 'ENTREZID', org.Hs.eg.db) %$%
+  setNames(ENTREZID, SYMBOL)
+
+measured_universe <- gene_id_per_name[rownames(cm_bool)] %>% .[!is.na(.)]
 ```
 
 
 
-```{r}
-#Heatmap
-de_all4_ADAR1<-de_all4[de_all4$Gene=='ADAR',]
-df_ADAR1<- data.frame(Type=de_all4_ADAR1$Type,ADAR1=de_all4_ADAR1$log2FoldChange)
+```{r, message=FALSE, warning=FALSE}
+sample_groups <- split(names(condition_per_sample), condition_per_sample)
+de <- getPerCellTypeDE(con, groups=annotation, sample.groups=sample_groups,
+                       ref.level="control", n.cores=5, min.cell.count=3) %>% lapply(`[[`, "res")
+de2 <- getPerCellTypeDE(con, groups=annotation2, sample.groups=sample_groups,
+                       ref.level="control", n.cores=5, min.cell.count=3) %>% lapply(`[[`, "res")
+de_filtered <- lapply(de, function(df) df[!is.na(df$stat) & (abs(df$stat) > 3),])
+de_genes_filt <- mapply(intersect, lapply(de_filtered, rownames), expressed_genes_per_type[names(de_filtered)])
 
-de_all4_ADAR2<-de_all4[de_all4$Gene=='ADARB1',]
-df_ADAR2<- data.frame(Type=de_all4_ADAR2$Type,ADAR2=de_all4_ADAR2$log2FoldChange)
+de_gene_ids <- lapply(de_genes_filt, function(gs) gene_id_per_name[gs] %>% .[!is.na(.)])
 
-de_all4_ADAR3<-de_all4[de_all4$Gene=='ADARB2',]
-df_ADAR3<- data.frame(Type=de_all4_ADAR3$Type,ADAR3=de_all4_ADAR3$log2FoldChange)
+de_filtered2 <- lapply(de2, function(df) df[!is.na(df$stat) & (abs(df$stat) > 3),])
+de_genes_filt2 <- mapply(intersect, lapply(de_filtered2, rownames), expressed_genes_per_type[names(de_filtered)])
+
+de_gene_ids2 <- lapply(de_genes_filt2, function(gs) gene_id_per_name[gs] %>% .[!is.na(.)])
+```
+
+```{r, message=FALSE, warning=FALSE}
+# de_all <- names(de_filtered) %>% lapply(function(n) 
+#   cbind(Type=n, de_filtered[[n]], lowExpession=!(rownames(de_filtered[[n]]) %in% expressed_genes_per_type[[n]]))) %>% 
+#   lapply(as_tibble, rownames="Gene") %>% bind_rows()
+
+de_all <- names(de_filtered) %>% lapply(function(n) 
+  cbind(Type=n, de[[n]])) %>% 
+  lapply(as_tibble, rownames="Gene") %>% bind_rows()
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+#Heatmap for the differential expression analysis
+
+de_all_ADAR1<-de_all[de_all$Gene=='ADAR',]
+df_ADAR1<- data.frame(Type=de_all_ADAR1$Type,ADAR1=de_all_ADAR1$log2FoldChange)
+
+de_all_ADAR2<-de_all[de_all$Gene=='ADARB1',]
+df_ADAR2<- data.frame(Type=de_all_ADAR2$Type,ADAR2=de_all_ADAR2$log2FoldChange)
+
+de_all_ADAR3<-de_all[de_all$Gene=='ADARB2',]
+df_ADAR3<- data.frame(Type=de_all_ADAR3$Type,ADAR3=de_all_ADAR3$log2FoldChange)
 
 
 df_list<- list(df_ADAR1,df_ADAR2,df_ADAR3)
@@ -59,14 +172,14 @@ data_heatmap8sub<- as.matrix(data_heatmap8sub)
 
 
 
-de_all4_ADAR1<-de_all4[de_all4$Gene=='ADAR',]
-df2_ADAR1<- data.frame(Type=de_all4_ADAR1$Type,ADAR1_pValue=de_all4_ADAR1$padj)
+de_all_ADAR1<-de_all[de_all$Gene=='ADAR',]
+df2_ADAR1<- data.frame(Type=de_all_ADAR1$Type,ADAR1_pValue=de_all_ADAR1$padj)
 
-de_all4_ADAR2<-de_all4[de_all4$Gene=='ADARB1',]
-df2_ADAR2<- data.frame(Type=de_all4_ADAR2$Type,ADAR2_pValue=de_all4_ADAR2$padj)
+de_all_ADAR2<-de_all[de_all$Gene=='ADARB1',]
+df2_ADAR2<- data.frame(Type=de_all_ADAR2$Type,ADAR2_pValue=de_all_ADAR2$padj)
 
-de_all4_ADAR3<-de_all4[de_all4$Gene=='ADARB2',]
-df2_ADAR3<- data.frame(Type=de_all4_ADAR3$Type,ADAR3_pValue=de_all4_ADAR3$padj)
+de_all_ADAR3<-de_all[de_all$Gene=='ADARB2',]
+df2_ADAR3<- data.frame(Type=de_all_ADAR3$Type,ADAR3_pValue=de_all_ADAR3$padj)
 
 
 df2_list<- list(df2_ADAR1,df2_ADAR2,df2_ADAR3)
@@ -78,11 +191,32 @@ data_heatmap5<- as.matrix(data_heatmap5)
 col_fun = colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
 data_heatmap8sub <- data_heatmap8sub
 data_heatmap5<-data_heatmap5
+
 heatmap5<- Heatmap(data_heatmap8sub, name = "log2FoldChange", row_order = sort(rownames(data_heatmap8sub)),
                    column_order = sort(colnames(data_heatmap8sub)),
                    col = col_fun,row_names_gp = gpar(fontsize = 8),column_title_gp = gpar(fontsize = 8),column_names_gp = gpar(fontsize = 8), cell_fun = function(j, i, x, y, width, height, fill) {if(data_heatmap5[i, j] < 0.05  & data_heatmap5[i,j]!=0) grid.text(sprintf("*", data_heatmap8sub[i, j]), x, y, gp = gpar(fontsize = 12))})
 heatmap5
+
 tidyHeatmap:::save_pdf(heatmap5,"heatmap_ADAR_36sub.pdf",width=4.5, height=20)
 
 ```
+
+
+```{r} 
+#UMAP of the ADAR gene family
+umap_genes <- c("ADAR","ADARB1","ADARB2")
+
+gg_ann <- plotAnnotationByLevels(con$embedding, annotation_by_level, size=0.1, font.size=c(4, 4), shuffle.colors=T,
+                       raster=T, raster.dpi=120, raster.width=4, raster.height=4, build.panel=F)[[2]]
+
+gg_genes <- toupper(umap_genes) %>% plotGeneExpression(con$embedding, cm_merged, build.panel=F, size=0.1, alpha=0.2, 
+                                   raster=T, raster.width=11/4, raster.height=8/3, raster.dpi=100)
+
+c(list(gg_ann), gg_genes) %>% 
+  lapply(`+`, theme(axis.title=element_blank(), plot.title=element_blank(), plot.margin=margin())) %>% 
+  cowplot::plot_grid(plotlist=., ncol=4, labels=c("", p_genes), label_fontface="italic", label_x=0.3)
+
+ggsave(outPath("UMAP_adar_family.pdf"), width=18, height=8)
+```
+
 
