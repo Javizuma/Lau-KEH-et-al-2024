@@ -43,6 +43,8 @@ outPath <- function(...) OutputPath("adar_analysis", ...)
 ##Getting the conos environment used in Pfisterer et al. 
 
 ```{r}
+
+#We need to download the github repository (https://github.com/khodosevichlab/Epilepsy19) and open the project in order to use the functions needed
 #Preparing the data
 con <- read_rds(CachePath("con_filt_samples.rds"))
 
